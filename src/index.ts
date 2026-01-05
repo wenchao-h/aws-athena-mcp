@@ -1,12 +1,15 @@
 #!/usr/bin/env node
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
 import {
   CallToolRequestSchema,
   ErrorCode,
   ListToolsRequestSchema,
   McpError,
 } from "@modelcontextprotocol/sdk/types.js";
+import express from "express";
+import cors from "cors";
 import { AthenaService } from "./athena.js";
 import { QueryInput, AthenaError } from "./types.js";
 
@@ -287,9 +290,63 @@ class AthenaServer {
   }
 
   async run() {
+    const transportMode = process.env.TRANSPORT_MODE || "stdio";
+
+    if (transportMode === "sse") {
+      await this.runSSE();
+    } else {
+      await this.runStdio();
+    }
+  }
+
+  private async runStdio() {
     const transport = new StdioServerTransport();
     await this.server.connect(transport);
     console.error("AWS Athena MCP server running on stdio");
+  }
+
+  private async runSSE() {
+    const app = express();
+    const port = parseInt(process.env.PORT || "3000", 10);
+
+    // Enable CORS for all origins (you can restrict this in production)
+    app.use(cors({
+      origin: "*",
+      methods: ["GET", "POST", "OPTIONS"],
+      allowedHeaders: ["Content-Type", "Authorization"],
+    }));
+
+    app.use(express.json());
+
+    // Health check endpoint
+    app.get("/health", (_req, res) => {
+      res.json({ status: "ok", service: "aws-athena-mcp" });
+    });
+
+    // SSE endpoint for MCP
+    app.get("/sse", async (req, res) => {
+      console.error("New SSE connection established");
+      
+      const transport = new SSEServerTransport("/message", res);
+      await this.server.connect(transport);
+
+      // Handle client disconnect
+      req.on("close", () => {
+        console.error("SSE connection closed");
+      });
+    });
+
+    // POST endpoint for sending messages
+    app.post("/message", async (req, res) => {
+      // This endpoint is handled by SSEServerTransport
+      res.status(200).end();
+    });
+
+    app.listen(port, () => {
+      console.error(`AWS Athena MCP server running on http://localhost:${port}`);
+      console.error(`SSE endpoint: http://localhost:${port}/sse`);
+      console.error(`Health check: http://localhost:${port}/health`);
+    });
   }
 }
 
